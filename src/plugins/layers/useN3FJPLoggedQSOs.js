@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
+import { makeDraggable } from './makeDraggable.js';
 
 export const metadata = {
   id: 'n3fjp_logged_qsos',
@@ -18,13 +19,97 @@ const POLL_MS = 2000;
 const STORAGE_MINUTES_KEY = 'n3fjp_display_minutes';
 const STORAGE_COLOR_KEY = 'n3fjp_line_color';
 
-// Make control draggable by its title
-// Registry so a second call for the same storageKey cancels the previous listeners.
+function addMinimizeToggle(element, storageKey) {
+  if (!element) return;
+
+  const minimizeKey = storageKey + '-minimized';
+  const header = element.firstElementChild;
+  if (!header) return;
+
+  const existingTitle = header.querySelector('[data-drag-handle="true"]');
+  const existingButton = header.querySelector('.n3fjp-minimize-btn');
+  const existingWrapper = element.querySelector('.n3fjp-panel-content');
+
+  if (existingTitle) {
+    existingTitle.style.fontFamily = "'JetBrains Mono', monospace";
+    existingTitle.style.fontSize = '13px';
+    existingTitle.style.fontWeight = '700';
+    existingTitle.style.color = '#00b4ff';
+  }
+
+  if (existingButton && existingWrapper) {
+    const isMinimized = localStorage.getItem(minimizeKey) === 'true';
+    existingWrapper.style.display = isMinimized ? 'none' : 'block';
+    existingButton.innerHTML = isMinimized ? '▶' : '▼';
+    return;
+  }
+
+  const content = Array.from(element.children).slice(1);
+  const contentWrapper = document.createElement('div');
+  contentWrapper.className = 'n3fjp-panel-content';
+  content.forEach((child) => contentWrapper.appendChild(child));
+  element.appendChild(contentWrapper);
+
+  const minimizeBtn = document.createElement('button');
+  minimizeBtn.className = 'n3fjp-minimize-btn';
+  minimizeBtn.innerHTML = '▼';
+  minimizeBtn.style.cssText = `
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    min-width: 16px;
+    height: 16px;
+    background: none;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    user-select: none;
+    padding: 2px 4px;
+    margin: 0;
+    font-size: 10px;
+    line-height: 1;
+  `;
+  minimizeBtn.title = 'Minimize/Maximize';
+  minimizeBtn.addEventListener('mousedown', (e) => {
+    e.stopPropagation();
+  });
+
+  header.style.display = 'flex';
+  header.style.justifyContent = 'space-between';
+  header.style.alignItems = 'center';
+  const title = document.createElement('span');
+  title.textContent = header.textContent.replace(/[▼▶]/g, '').trim();
+  title.dataset.dragHandle = 'true';
+  title.style.flex = '1';
+  title.style.cursor = 'grab';
+  title.style.userSelect = 'none';
+  title.style.fontFamily = "'JetBrains Mono', monospace";
+  title.style.fontSize = '13px';
+  title.style.fontWeight = '700';
+  title.style.color = '#00b4ff';
+  header.textContent = '';
+  header.appendChild(title);
+  header.appendChild(minimizeBtn);
+
+  const isMinimized = localStorage.getItem(minimizeKey) === 'true';
+  contentWrapper.style.display = isMinimized ? 'none' : 'block';
+  minimizeBtn.innerHTML = isMinimized ? '▶' : '▼';
+
+  minimizeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const hidden = contentWrapper.style.display === 'none';
+    contentWrapper.style.display = hidden ? 'block' : 'none';
+    minimizeBtn.innerHTML = hidden ? '▼' : '▶';
+    localStorage.setItem(minimizeKey, String(!hidden));
+  });
+}
 
 export function useLayer({ enabled = false, opacity = 0.9, map = null }) {
   const [layersRef, setLayersRef] = useState([]);
   const [qsos, setQsos] = useState([]);
   const [retentionMinutes, setRetentionMinutes] = useState(15);
+  const controlRef = useRef(null);
 
   const lastOpenDxCallRef = useRef(null);
   const suppressReopenRef = useRef(false);
@@ -66,6 +151,93 @@ export function useLayer({ enabled = false, opacity = 0.9, map = null }) {
       clearInterval(interval);
     };
   }, [enabled]);
+
+  useEffect(() => {
+    if (!map || typeof L === 'undefined') return;
+
+    if (controlRef.current) {
+      try {
+        map.removeControl(controlRef.current);
+      } catch {}
+      controlRef.current = null;
+    }
+
+    if (!enabled) return;
+
+    const Control = L.Control.extend({
+      options: { position: 'topright' },
+      onAdd() {
+        const div = L.DomUtil.create('div', 'n3fjp-control');
+        div.style.cssText = `
+          background: var(--bg-panel);
+          padding: 10px;
+          border-radius: 8px;
+          border: 1px solid var(--border-color);
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px;
+          color: var(--text-primary);
+          min-width: 190px;
+        `;
+        div.innerHTML = `
+          <div style="margin-bottom: 8px;">🗺️ N3FJP Logged QSOs</div>
+          <div id="n3fjp-stats" style="display: grid; gap: 4px;">
+            <div>QSOs: <span style="color: var(--accent-cyan);">${qsos.length}</span></div>
+            <div>Display: <span style="color: var(--accent-amber);">${displayMinutes} min</span></div>
+            <div>Retention: <span style="color: var(--accent-green);">${retentionMinutes} min</span></div>
+            <div>Line: <span style="color: ${lineColor};">${lineColor}</span></div>
+          </div>
+        `;
+
+        L.DomEvent.disableClickPropagation(div);
+        L.DomEvent.disableScrollPropagation(div);
+        return div;
+      },
+    });
+
+    controlRef.current = new Control();
+    map.addControl(controlRef.current);
+
+    setTimeout(() => {
+      const container = controlRef.current?._container;
+      if (!container) return;
+
+      const saved = localStorage.getItem('n3fjp-position');
+      if (saved) {
+        try {
+          const { top, left } = JSON.parse(saved);
+          container.style.position = 'fixed';
+          container.style.top = top + 'px';
+          container.style.left = left + 'px';
+          container.style.right = 'auto';
+          container.style.bottom = 'auto';
+        } catch {}
+      }
+
+      addMinimizeToggle(container, 'n3fjp-position');
+      makeDraggable(container, 'n3fjp-position');
+    }, 150);
+
+    return () => {
+      if (controlRef.current) {
+        try {
+          map.removeControl(controlRef.current);
+        } catch {}
+        controlRef.current = null;
+      }
+    };
+  }, [enabled, map]);
+
+  useEffect(() => {
+    const statsEl = document.getElementById('n3fjp-stats');
+    if (!statsEl || !enabled) return;
+
+    statsEl.innerHTML = `
+      <div>QSOs: <span style="color: var(--accent-cyan);">${qsos.length}</span></div>
+      <div>Display: <span style="color: var(--accent-amber);">${displayMinutes} min</span></div>
+      <div>Retention: <span style="color: var(--accent-green);">${retentionMinutes} min</span></div>
+      <div>Line: <span style="color: ${lineColor};">${lineColor}</span></div>
+    `;
+  }, [enabled, qsos.length, displayMinutes, retentionMinutes, lineColor]);
 
   /// React to Integrations panel changes (display window + color)
   useEffect(() => {
