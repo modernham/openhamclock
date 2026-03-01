@@ -6099,12 +6099,19 @@ function pskMqttConnect() {
 
     const count = pskMqtt.subscribedCalls.size;
     if (count > 0) {
-      console.log(`[PSK-MQTT] Connected — subscribing ${count} callsigns`);
+      console.log(`[PSK-MQTT] Connected — subscribing ${count} keys`);
       // Batch all topic subscriptions into a single subscribe call
       const topics = [];
-      for (const call of pskMqtt.subscribedCalls) {
-        topics.push(`pskr/filter/v2/+/+/${call}/#`);
-        topics.push(`pskr/filter/v2/+/+/+/${call}/#`);
+      for (const key of pskMqtt.subscribedCalls) {
+        if (key.startsWith('grid:')) {
+          const grid = key.slice(5);
+          topics.push(`pskr/filter/v2/+/+/+/+/${grid}/#`);
+          topics.push(`pskr/filter/v2/+/+/+/+/+/${grid}/#`);
+        } else {
+          const call = key.startsWith('call:') ? key.slice(5) : key;
+          topics.push(`pskr/filter/v2/+/+/${call}/#`);
+          topics.push(`pskr/filter/v2/+/+/+/${call}/#`);
+        }
       }
       pskMqtt.client.subscribe(topics, { qos: 0 }, (err) => {
         if (err) {
@@ -6113,11 +6120,11 @@ function pskMqttConnect() {
           if (err.message && err.message.includes('onnection closed')) return;
           console.error(`[PSK-MQTT] Batch subscribe error:`, err.message);
         } else {
-          console.log(`[PSK-MQTT] Subscribed ${count} callsigns (${topics.length} topics)`);
+          console.log(`[PSK-MQTT] Subscribed ${count} keys (${topics.length} topics)`);
         }
       });
     } else {
-      console.log('[PSK-MQTT] Connected (no active callsigns)');
+      console.log('[PSK-MQTT] Connected (no active subscriptions)');
     }
   });
 
@@ -6150,64 +6157,61 @@ function pskMqttConnect() {
       pskMqtt.stats.spotsReceived++;
       pskMqtt.stats.lastSpotTime = now;
 
-      // Buffer for TX subscribers (sc is the callsign being tracked)
-      const scUpper = sc.toUpperCase();
-      if (pskMqtt.subscribers.has(scUpper)) {
-        const txSpot = {
-          ...spot,
-          lat: receiverLoc?.lat,
-          lon: receiverLoc?.lon,
-          direction: 'tx',
-        };
-        // Dedup: skip if same sender+receiver+band+freq already in buffer or recent
+      // Helper: buffer a spot for a subscriber key, with dedup and cap
+      const bufferSpot = (subKey, enrichedSpot) => {
         const spotKey = `${sc}|${rc}|${spot.band}|${freq}`;
-        if (!pskMqtt.spotBuffer.has(scUpper)) pskMqtt.spotBuffer.set(scUpper, []);
-        const scBuf = pskMqtt.spotBuffer.get(scUpper);
-        const isDupBuf = scBuf.some((s) => `${s.sender}|${s.receiver}|${s.band}|${s.freq}` === spotKey);
-        if (!isDupBuf) {
-          scBuf.push(txSpot);
+        // Grid subscriptions are noisier — use a higher cap
+        const maxRecent = subKey.startsWith('grid:') ? 500 : 250;
+        const maxRecentTrim = subKey.startsWith('grid:') ? 400 : 200;
+
+        if (!pskMqtt.spotBuffer.has(subKey)) pskMqtt.spotBuffer.set(subKey, []);
+        const buf = pskMqtt.spotBuffer.get(subKey);
+        if (!buf.some((s) => `${s.sender}|${s.receiver}|${s.band}|${s.freq}` === spotKey)) {
+          buf.push(enrichedSpot);
         }
-        // Also add to recent spots (capped at insert time to prevent unbounded growth)
-        if (!pskMqtt.recentSpots.has(scUpper)) pskMqtt.recentSpots.set(scUpper, []);
-        const scRecent = pskMqtt.recentSpots.get(scUpper);
-        const isDupRecent = scRecent.some(
+
+        if (!pskMqtt.recentSpots.has(subKey)) pskMqtt.recentSpots.set(subKey, []);
+        const recent = pskMqtt.recentSpots.get(subKey);
+        const isDup = recent.some(
           (s) =>
             `${s.sender}|${s.receiver}|${s.band}|${s.freq}` === spotKey &&
             Math.abs(s.timestamp - spot.timestamp) < 30000,
         );
-        if (!isDupRecent) {
-          scRecent.push(txSpot);
-          if (scRecent.length > 250) pskMqtt.recentSpots.set(scUpper, scRecent.slice(-200));
+        if (!isDup) {
+          recent.push(enrichedSpot);
+          if (recent.length > maxRecent) pskMqtt.recentSpots.set(subKey, recent.slice(-maxRecentTrim));
+        }
+      };
+
+      // ── Callsign-based routing ──
+      // TX: sender callsign matches a subscriber
+      const scUpper = sc.toUpperCase();
+      if (pskMqtt.subscribers.has(scUpper)) {
+        bufferSpot(scUpper, { ...spot, lat: receiverLoc?.lat, lon: receiverLoc?.lon, direction: 'tx' });
+      }
+
+      // RX: receiver callsign matches a subscriber
+      const rcUpper = rc.toUpperCase();
+      if (pskMqtt.subscribers.has(rcUpper)) {
+        bufferSpot(rcUpper, { ...spot, lat: senderLoc?.lat, lon: senderLoc?.lon, direction: 'rx' });
+      }
+
+      // ── Grid-based routing ──
+      // TX: sender grid matches a grid subscriber (signal sent FROM this grid)
+      if (sl) {
+        const slUpper = sl.toUpperCase().substring(0, 4);
+        const gridTxKey = `grid:${slUpper}`;
+        if (pskMqtt.subscribers.has(gridTxKey)) {
+          bufferSpot(gridTxKey, { ...spot, lat: receiverLoc?.lat, lon: receiverLoc?.lon, direction: 'tx' });
         }
       }
 
-      // Buffer for RX subscribers (rc is the callsign being tracked)
-      const rcUpper = rc.toUpperCase();
-      if (pskMqtt.subscribers.has(rcUpper)) {
-        const rxSpot = {
-          ...spot,
-          lat: senderLoc?.lat,
-          lon: senderLoc?.lon,
-          direction: 'rx',
-        };
-        // Dedup: skip if same sender+receiver+band+freq already in buffer or recent
-        const rxSpotKey = `${sc}|${rc}|${spot.band}|${freq}`;
-        if (!pskMqtt.spotBuffer.has(rcUpper)) pskMqtt.spotBuffer.set(rcUpper, []);
-        const rcBuf = pskMqtt.spotBuffer.get(rcUpper);
-        const isDupRxBuf = rcBuf.some((s) => `${s.sender}|${s.receiver}|${s.band}|${s.freq}` === rxSpotKey);
-        if (!isDupRxBuf) {
-          rcBuf.push(rxSpot);
-        }
-        if (!pskMqtt.recentSpots.has(rcUpper)) pskMqtt.recentSpots.set(rcUpper, []);
-        const rcRecent = pskMqtt.recentSpots.get(rcUpper);
-        const isDupRxRecent = rcRecent.some(
-          (s) =>
-            `${s.sender}|${s.receiver}|${s.band}|${s.freq}` === rxSpotKey &&
-            Math.abs(s.timestamp - spot.timestamp) < 30000,
-        );
-        if (!isDupRxRecent) {
-          rcRecent.push(rxSpot);
-          if (rcRecent.length > 250) pskMqtt.recentSpots.set(rcUpper, rcRecent.slice(-200));
+      // RX: receiver grid matches a grid subscriber (signal received AT this grid)
+      if (rl) {
+        const rlUpper = rl.toUpperCase().substring(0, 4);
+        const gridRxKey = `grid:${rlUpper}`;
+        if (pskMqtt.subscribers.has(gridRxKey)) {
+          bufferSpot(gridRxKey, { ...spot, lat: senderLoc?.lat, lon: senderLoc?.lon, direction: 'rx' });
         }
       }
     } catch {
@@ -6289,6 +6293,58 @@ function unsubscribeCallsign(call) {
   });
 }
 
+// Grid-based MQTT subscriptions.
+// PSKReporter MQTT v2 topic hierarchy places the sender/receiver grid square
+// two levels after the sender/receiver callsign:
+//   pskr/filter/v2/{band}/{mode}/{senderCall}/{receiverCall}/{senderGrid}/{receiverGrid}
+// Subscribing with the grid in positions 7/8 returns ALL spots sent from or
+// received at that grid, regardless of callsign — ideal for pre-TX band assessment.
+//
+// NOTE: if PSKReporter changes its topic schema these patterns may need updating.
+// Verify against https://pskreporter.info/mqtt.html if spots stop arriving.
+function subscribeGrid(grid) {
+  if (!pskMqtt.client || !pskMqtt.connected) return;
+  const txTopic = `pskr/filter/v2/+/+/+/+/${grid}/#`;  // senderGrid position (7)
+  const rxTopic = `pskr/filter/v2/+/+/+/+/+/${grid}/#`;   // receiverGrid position (8)
+  pskMqtt.client.subscribe([txTopic, rxTopic], { qos: 0 }, (err) => {
+    if (err) {
+      if (err.message && err.message.includes('onnection closed')) return;
+      console.error(`[PSK-MQTT] Grid subscribe error for ${grid}:`, err.message);
+    } else {
+      console.log(`[PSK-MQTT] Subscribed grid ${grid}`);
+    }
+  });
+}
+
+function unsubscribeGrid(grid) {
+  if (!pskMqtt.client || !pskMqtt.connected) return;
+  const txTopic = `pskr/filter/v2/+/+/+/+/${grid}/#`;
+  const rxTopic = `pskr/filter/v2/+/+/+/+/+/${grid}/#`;
+  pskMqtt.client.unsubscribe([txTopic, rxTopic], (err) => {
+    if (err) {
+      if (err.message && err.message.includes('onnection closed')) return;
+      console.error(`[PSK-MQTT] Grid unsubscribe error for ${grid}:`, err.message);
+    }
+  });
+}
+
+// Subscribe or unsubscribe based on key type (call:XX or grid:XX)
+function subscribeKey(key) {
+  if (key.startsWith('grid:')) {
+    subscribeGrid(key.slice(5));
+  } else {
+    subscribeCallsign(key.startsWith('call:') ? key.slice(5) : key);
+  }
+}
+
+function unsubscribeKey(key) {
+  if (key.startsWith('grid:')) {
+    unsubscribeGrid(key.slice(5));
+  } else {
+    unsubscribeCallsign(key.startsWith('call:') ? key.slice(5) : key);
+  }
+}
+
 // Flush buffered spots to SSE clients every 15 seconds
 pskMqtt.flushInterval = setInterval(() => {
   for (const [call, clients] of pskMqtt.subscribers) {
@@ -6346,7 +6402,7 @@ pskMqtt.cleanupInterval = setInterval(
       if (clients.size === 0) {
         pskMqtt.subscribers.delete(call);
         pskMqtt.subscribedCalls.delete(call);
-        unsubscribeCallsign(call);
+        unsubscribeKey(call);
         console.log(`[PSK-MQTT] Cleaned up empty subscriber set for ${call}`);
       }
     }
@@ -6355,11 +6411,25 @@ pskMqtt.cleanupInterval = setInterval(
 );
 
 // SSE endpoint — clients connect here for real-time spots
-app.get('/api/pskreporter/stream/:callsign', (req, res) => {
-  const callsign = req.params.callsign.toUpperCase();
-  if (!callsign || callsign === 'N0CALL') {
-    return res.status(400).json({ error: 'Valid callsign required' });
+// ?type=grid subscribes by grid square instead of callsign
+app.get('/api/pskreporter/stream/:identifier', (req, res) => {
+  const identifier = req.params.identifier.toUpperCase();
+  const type = (req.query.type || 'call').toLowerCase();
+
+  if (type === 'grid') {
+    // Validate grid: 4 or 6 character Maidenhead locator
+    if (!/^[A-R]{2}[0-9]{2}([A-X]{2})?$/i.test(identifier)) {
+      return res.status(400).json({ error: 'Valid 4 or 6 character grid square required (e.g. FN20 or FN20ab)' });
+    }
+  } else {
+    if (!identifier || identifier === 'N0CALL') {
+      return res.status(400).json({ error: 'Valid callsign required' });
+    }
   }
+
+  // Subscriber key: "grid:FN20" for grid mode, or plain callsign for backward compat
+  const subKey = type === 'grid' ? `grid:${identifier.substring(0, 4)}` : identifier;
+  const maxRecentReturn = type === 'grid' ? 400 : 200;
 
   // Set up SSE — disable any buffering
   res.writeHead(200, {
@@ -6372,28 +6442,30 @@ app.get('/api/pskreporter/stream/:callsign', (req, res) => {
   res.flushHeaders();
 
   // Send initial connection event with any recent spots we already have
-  const recentSpots = pskMqtt.recentSpots.get(callsign) || [];
+  const recentSpots = pskMqtt.recentSpots.get(subKey) || [];
   res.write(
     `event: connected\ndata: ${JSON.stringify({
-      callsign,
+      callsign: identifier,
+      type,
+      subKey,
       mqttConnected: pskMqtt.connected,
-      recentSpots: recentSpots.slice(-200),
-      subscriberCount: (pskMqtt.subscribers.get(callsign)?.size || 0) + 1,
+      recentSpots: recentSpots.slice(-maxRecentReturn),
+      subscriberCount: (pskMqtt.subscribers.get(subKey)?.size || 0) + 1,
     })}\n\n`,
   );
   if (typeof res.flush === 'function') res.flush();
 
   // Register this client
-  if (!pskMqtt.subscribers.has(callsign)) {
-    pskMqtt.subscribers.set(callsign, new Set());
+  if (!pskMqtt.subscribers.has(subKey)) {
+    pskMqtt.subscribers.set(subKey, new Set());
   }
-  pskMqtt.subscribers.get(callsign).add(res);
+  pskMqtt.subscribers.get(subKey).add(res);
 
-  // Subscribe on MQTT if this is a new callsign
-  if (!pskMqtt.subscribedCalls.has(callsign)) {
-    pskMqtt.subscribedCalls.add(callsign);
+  // Subscribe on MQTT if this is a new key
+  if (!pskMqtt.subscribedCalls.has(subKey)) {
+    pskMqtt.subscribedCalls.add(subKey);
     if (pskMqtt.connected) {
-      subscribeCallsign(callsign);
+      subscribeKey(subKey);
     }
     // Start MQTT connection if not already connected
     if (!pskMqtt.client || (!pskMqtt.connected && pskMqtt.reconnectAttempts === 0)) {
@@ -6402,7 +6474,7 @@ app.get('/api/pskreporter/stream/:callsign', (req, res) => {
   }
 
   logInfo(
-    `[PSK-MQTT] SSE client connected for ${callsign} (${pskMqtt.subscribers.get(callsign).size} clients, ${pskMqtt.subscribedCalls.size} callsigns total)`,
+    `[PSK-MQTT] SSE client connected for ${subKey} (${pskMqtt.subscribers.get(subKey).size} clients, ${pskMqtt.subscribedCalls.size} keys total)`,
   );
 
   // Keepalive ping every 30 seconds
@@ -6418,23 +6490,23 @@ app.get('/api/pskreporter/stream/:callsign', (req, res) => {
   // Cleanup on disconnect
   req.on('close', () => {
     clearInterval(keepalive);
-    const clients = pskMqtt.subscribers.get(callsign);
+    const clients = pskMqtt.subscribers.get(subKey);
     if (clients) {
       clients.delete(res);
-      logInfo(`[PSK-MQTT] SSE client disconnected for ${callsign} (${clients.size} remaining)`);
+      logInfo(`[PSK-MQTT] SSE client disconnected for ${subKey} (${clients.size} remaining)`);
 
-      // If no more clients for this callsign, unsubscribe after a grace period
+      // If no more clients for this key, unsubscribe after a grace period
       if (clients.size === 0) {
         setTimeout(() => {
-          const stillEmpty = pskMqtt.subscribers.get(callsign);
+          const stillEmpty = pskMqtt.subscribers.get(subKey);
           if (stillEmpty && stillEmpty.size === 0) {
-            pskMqtt.subscribers.delete(callsign);
-            pskMqtt.subscribedCalls.delete(callsign);
-            // Clean up spot data for this callsign
-            pskMqtt.recentSpots.delete(callsign);
-            pskMqtt.spotBuffer.delete(callsign);
-            unsubscribeCallsign(callsign);
-            console.log(`[PSK-MQTT] Unsubscribed ${callsign} (no more clients after grace period)`);
+            pskMqtt.subscribers.delete(subKey);
+            pskMqtt.subscribedCalls.delete(subKey);
+            // Clean up spot data
+            pskMqtt.recentSpots.delete(subKey);
+            pskMqtt.spotBuffer.delete(subKey);
+            unsubscribeKey(subKey);
+            console.log(`[PSK-MQTT] Unsubscribed ${subKey} (no more clients after grace period)`);
 
             // If no subscribers at all, disconnect MQTT entirely
             if (pskMqtt.subscribedCalls.size === 0 && pskMqtt.client) {

@@ -91,6 +91,8 @@ const PSKReporterPanel = ({
     connected = false,
     source = '',
     refresh = () => {},
+    filterMode = 'call',
+    identifier = '',
   } = pskReporter;
 
   // ── PSK filtering ──
@@ -259,9 +261,26 @@ const PSKReporterPanel = ({
 
         {/* Right controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          {/* PSK: status dot + filter + refresh */}
+          {/* PSK: status dot + grid badge + filter + refresh */}
           {panelMode === 'psk' && (
             <>
+              {filterMode === 'grid' && (
+                <span
+                  title={`Grid mode: showing all spots for ${identifier}`}
+                  style={{
+                    fontSize: '9px',
+                    fontWeight: '600',
+                    color: '#000',
+                    background: 'var(--accent-amber)',
+                    padding: '1px 4px',
+                    borderRadius: '3px',
+                    letterSpacing: '0.5px',
+                    fontFamily: "'JetBrains Mono', monospace",
+                  }}
+                >
+                  ⊞ {identifier?.substring(0, 4)}
+                </span>
+              )}
               {statusDot && (
                 <span style={{ color: statusDot.color, fontSize: '10px', lineHeight: 1 }}>{statusDot.char}</span>
               )}
@@ -387,16 +406,24 @@ const PSKReporterPanel = ({
             <button
               onClick={() => setActiveTabPersist('tx')}
               style={subTabBtn(activeTab === 'tx', '#4ade80')}
-              title={t('pskReporterPanel.tabs.heardTooltip')}
+              title={filterMode === 'grid'
+                ? `Stations hearing signals from ${identifier?.substring(0, 4)}`
+                : t('pskReporterPanel.tabs.heardTooltip')}
             >
-              ▲ {t('pskReporterPanel.tabs.heard', { count: pskFilterCount > 0 ? filteredTx.length : txCount })}
+              ▲ {filterMode === 'grid'
+                ? `Sent (${pskFilterCount > 0 ? filteredTx.length : txCount})`
+                : t('pskReporterPanel.tabs.heard', { count: pskFilterCount > 0 ? filteredTx.length : txCount })}
             </button>
             <button
               onClick={() => setActiveTabPersist('rx')}
               style={subTabBtn(activeTab === 'rx', '#60a5fa')}
-              title={t('pskReporterPanel.tabs.hearingTooltip')}
+              title={filterMode === 'grid'
+                ? `Stations heard at ${identifier?.substring(0, 4)}`
+                : t('pskReporterPanel.tabs.hearingTooltip')}
             >
-              ▼ {t('pskReporterPanel.tabs.hearing', { count: pskFilterCount > 0 ? filteredRx.length : rxCount })}
+              ▼ {filterMode === 'grid'
+                ? `Rcvd (${pskFilterCount > 0 ? filteredRx.length : rxCount})`
+                : t('pskReporterPanel.tabs.hearing', { count: pskFilterCount > 0 ? filteredRx.length : rxCount })}
             </button>
           </>
         ) : (
@@ -424,7 +451,7 @@ const PSKReporterPanel = ({
         {/* === PSKReporter content === */}
         {panelMode === 'psk' && (
           <>
-            {!callsign || callsign === 'N0CALL' ? (
+            {filterMode !== 'grid' && (!callsign || callsign === 'N0CALL') ? (
               <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '16px', fontSize: '11px' }}>
                 {t('pskReporterPanel.psk.setCallsign')}
               </div>
@@ -441,9 +468,11 @@ const PSKReporterPanel = ({
               <div style={{ textAlign: 'center', padding: '12px', color: 'var(--text-muted)', fontSize: '11px' }}>
                 {pskFilterCount > 0
                   ? t('pskReporterPanel.psk.noSpotsFiltered')
-                  : activeTab === 'tx'
-                    ? t('pskReporterPanel.psk.waitingForSpots')
-                    : t('pskReporterPanel.psk.noStationsHeard')}
+                  : filterMode === 'grid'
+                    ? `Waiting for spots in ${identifier?.substring(0, 4)}...`
+                    : activeTab === 'tx'
+                      ? t('pskReporterPanel.psk.waitingForSpots')
+                      : t('pskReporterPanel.psk.noStationsHeard')}
               </div>
             ) : (
               filteredReports.slice(0, 25).map((report, i) => {

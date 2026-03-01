@@ -34,7 +34,10 @@ function deduplicateSpots(spots, maxSpots) {
 }
 
 export const usePSKReporter = (callsign, options = {}) => {
-  const { minutes = 30, enabled = true, maxSpots = 500 } = options;
+  const { minutes = 30, enabled = true, maxSpots = 500, filterMode = 'call', gridSquare = '' } = options;
+
+  // In grid mode, the identifier is the grid square; in call mode, the callsign
+  const identifier = filterMode === 'grid' && gridSquare ? gridSquare.toUpperCase() : callsign;
 
   const [txReports, setTxReports] = useState([]);
   const [rxReports, setRxReports] = useState([]);
@@ -64,8 +67,9 @@ export const usePSKReporter = (callsign, options = {}) => {
     (spots) => {
       if (!mountedRef.current || !spots || spots.length === 0) return;
 
-      const upperCallsign = callsign?.toUpperCase();
-      if (!upperCallsign) return;
+      // In call mode we filter by callsign; in grid mode the server already filtered
+      const upperIdentifier = identifier?.toUpperCase();
+      if (!upperIdentifier) return;
 
       let txChanged = false;
       let rxChanged = false;
@@ -93,14 +97,16 @@ export const usePSKReporter = (callsign, options = {}) => {
         setLastUpdate(new Date());
       }
     },
-    [callsign, minutes, maxSpots, cleanOldSpots],
+    [identifier, minutes, maxSpots, cleanOldSpots],
   );
 
   // Connect to SSE stream
   useEffect(() => {
     mountedRef.current = true;
 
-    if (!callsign || callsign === 'N0CALL' || !enabled) {
+    // Disable check: App.jsx sets enabled=false when prerequisites are missing
+    // For grid mode: enabled = !!locator, for call mode: enabled = callsign !== 'N0CALL'
+    if (!enabled || !identifier) {
       setTxReports([]);
       setRxReports([]);
       setLoading(false);
@@ -109,7 +115,7 @@ export const usePSKReporter = (callsign, options = {}) => {
       return;
     }
 
-    const upperCallsign = callsign.toUpperCase();
+    const upperIdentifier = identifier.toUpperCase();
 
     // Clear old data on reconnect
     txReportsRef.current = [];
@@ -120,9 +126,11 @@ export const usePSKReporter = (callsign, options = {}) => {
     setError(null);
     setSource('connecting');
 
-    console.log(`[PSKReporter SSE] Connecting for ${upperCallsign}...`);
+    const modeLabel = filterMode === 'grid' ? `grid ${upperIdentifier}` : upperIdentifier;
+    console.log(`[PSKReporter SSE] Connecting for ${modeLabel}...`);
 
-    const url = `/api/pskreporter/stream/${encodeURIComponent(upperCallsign)}`;
+    const typeParam = filterMode === 'grid' ? '?type=grid' : '';
+    const url = `/api/pskreporter/stream/${encodeURIComponent(upperIdentifier)}${typeParam}`;
     const es = new EventSource(url);
     eventSourceRef.current = es;
 
@@ -180,7 +188,7 @@ export const usePSKReporter = (callsign, options = {}) => {
         es.close();
       }
     };
-  }, [callsign, enabled, reconnectKey, processSpots]);
+  }, [callsign, identifier, filterMode, gridSquare, enabled, reconnectKey, processSpots]);
 
   // Periodically clean old spots and update ages
   useEffect(() => {
@@ -248,6 +256,8 @@ export const usePSKReporter = (callsign, options = {}) => {
     source,
     lastUpdate,
     refresh,
+    filterMode,
+    identifier,
   };
 };
 

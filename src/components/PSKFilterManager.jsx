@@ -83,7 +83,7 @@ const GRID_REGIONS = [
   { name: 'Africa', grids: ['KH', 'KG', 'JH', 'JG', 'IH', 'IG'] },
 ];
 
-export const PSKFilterManager = ({ filters, onFilterChange, isOpen, onClose }) => {
+export const PSKFilterManager = ({ filters, onFilterChange, isOpen, onClose, callsign, locator }) => {
   const [activeTab, setActiveTab] = useState('bands');
   const [customGrid, setCustomGrid] = useState('');
 
@@ -126,6 +126,7 @@ export const PSKFilterManager = ({ filters, onFilterChange, isOpen, onClose }) =
     if (filters?.grids?.length) count += filters.grids.length;
     if (filters?.modes?.length) count += filters.modes.length;
     if (filters?.direction && filters.direction !== 'both') count += 1;
+    if (filters?.filterMode === 'grid') count += 1;
     return count;
   };
 
@@ -193,6 +194,120 @@ export const PSKFilterManager = ({ filters, onFilterChange, isOpen, onClose }) =
           <div style={{ display: 'flex', gap: '16px', marginTop: '6px' }}>
             <span>━━ TX (solid line, ● circle)</span>
             <span>╌╌ RX (dashed line, ◆ diamond)</span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderSourceTab = () => {
+    const mode = filters?.filterMode || 'call';
+    const grid4 = locator ? locator.toUpperCase().substring(0, 4) : '';
+
+    const options = [
+      {
+        value: 'call',
+        label: `My Callsign — ${callsign || 'N0CALL'}`,
+        desc: 'Subscribe to spots where your callsign is the sender or receiver. This is the standard PSKReporter view.',
+      },
+      {
+        value: 'grid',
+        label: `My Grid Square — ${grid4 || '????'}`,
+        desc: grid4
+          ? `Subscribe to ALL spots sent from or received at ${grid4}. Shows band activity in your area even before you transmit — ideal for choosing the best band.`
+          : 'Set your grid locator in Settings to enable this option.',
+      },
+    ];
+
+    return (
+      <div>
+        <div style={{ marginBottom: '15px' }}>
+          <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
+            PSKReporter Data Source
+          </span>
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+            Choose whether to subscribe by your callsign or your grid square. Grid mode shows all
+            activity in your area — useful for assessing band conditions before transmitting.
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => {
+                if (opt.value === 'grid' && !grid4) return; // Can't enable grid without a locator
+                onFilterChange({
+                  ...filters,
+                  filterMode: opt.value === 'call' ? undefined : opt.value,
+                });
+              }}
+              disabled={opt.value === 'grid' && !grid4}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-start',
+                padding: '12px 16px',
+                background: mode === opt.value ? 'rgba(255, 170, 0, 0.15)' : 'var(--bg-tertiary)',
+                border: mode === opt.value ? '2px solid var(--accent-amber)' : '1px solid var(--border-color)',
+                borderRadius: '6px',
+                cursor: opt.value === 'grid' && !grid4 ? 'not-allowed' : 'pointer',
+                fontFamily: 'inherit',
+                textAlign: 'left',
+                opacity: opt.value === 'grid' && !grid4 ? 0.5 : 1,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: '13px',
+                  fontWeight: '600',
+                  color: mode === opt.value ? 'var(--accent-amber)' : 'var(--text-primary)',
+                }}
+              >
+                {mode === opt.value ? '● ' : '○ '}
+                {opt.label}
+              </span>
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{opt.desc}</span>
+            </button>
+          ))}
+        </div>
+
+        {mode === 'grid' && (
+          <div
+            style={{
+              marginTop: '16px',
+              padding: '10px 12px',
+              background: 'rgba(0, 180, 255, 0.1)',
+              border: '1px solid rgba(0, 180, 255, 0.3)',
+              borderRadius: '6px',
+              fontSize: '11px',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <strong style={{ color: 'var(--accent-cyan)' }}>📡 Grid Mode Active</strong>
+            <div style={{ marginTop: '4px' }}>
+              Receiving all PSKReporter spots for grid <strong>{grid4}</strong>. This will show more spots
+              than callsign mode since it includes all stations in your grid area.
+            </div>
+          </div>
+        )}
+
+        <div
+          style={{
+            marginTop: '16px',
+            padding: '10px 12px',
+            background: 'var(--bg-tertiary)',
+            borderRadius: '6px',
+            fontSize: '11px',
+            color: 'var(--text-muted)',
+          }}
+        >
+          <strong style={{ color: 'var(--text-secondary)' }}>How it works:</strong>
+          <div style={{ marginTop: '6px', lineHeight: '1.5' }}>
+            <div>• <strong>Callsign mode:</strong> Who hears <em>me</em>, and who <em>I</em> hear</div>
+            <div>• <strong>Grid mode:</strong> Who hears <em>my grid</em>, and who <em>my grid</em> hears</div>
+            <div style={{ marginTop: '4px', opacity: 0.8 }}>
+              Grid mode matches PSKReporter&apos;s &ldquo;sent/received by my grid&rdquo; option.
+            </div>
           </div>
         </div>
       </div>
@@ -503,6 +618,9 @@ export const PSKFilterManager = ({ filters, onFilterChange, isOpen, onClose }) =
           <button onClick={() => setActiveTab('map')} style={tabStyle(activeTab === 'map')}>
             Map {filters?.direction && filters.direction !== 'both' ? '(1)' : ''}
           </button>
+          <button onClick={() => setActiveTab('source')} style={tabStyle(activeTab === 'source')}>
+            Source {filters?.filterMode === 'grid' ? '(⊞)' : ''}
+          </button>
         </div>
 
         {/* Tab Content */}
@@ -517,6 +635,7 @@ export const PSKFilterManager = ({ filters, onFilterChange, isOpen, onClose }) =
           {activeTab === 'grids' && renderGridsTab()}
           {activeTab === 'modes' && renderModesTab()}
           {activeTab === 'map' && renderMapTab()}
+          {activeTab === 'source' && renderSourceTab()}
         </div>
 
         {/* Footer */}

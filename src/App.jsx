@@ -197,8 +197,12 @@ const App = () => {
   const dxWeather = useWeather(dxLocation, config.allUnits);
   const pskReporter = usePSKReporter(config.callsign, {
     minutes: config.lowMemoryMode ? 5 : 30,
-    enabled: config.callsign !== 'N0CALL',
+    enabled: pskFilters?.filterMode === 'grid'
+      ? !!config.locator
+      : config.callsign !== 'N0CALL',
     maxSpots: config.lowMemoryMode ? 50 : 500,
+    filterMode: pskFilters?.filterMode || 'call',
+    gridSquare: config.locator || '',
   });
   const wsjtx = useWSJTX();
   const aprsData = useAPRS();
@@ -460,6 +464,8 @@ const App = () => {
         onFilterChange={setPskFilters}
         isOpen={showPSKFilters}
         onClose={() => setShowPSKFilters(false)}
+        callsign={config.callsign}
+        locator={config.locator}
       />
       <ActivateFilterManager
         name="POTA"
