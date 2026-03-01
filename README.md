@@ -822,13 +822,21 @@ To find your local IP: run `ipconfig` (Windows) or `ifconfig` / `ip addr` (Mac/L
 
 One-line install for Raspberry Pi (3B, 3B+, 4, 5). Supports both graphical and headless operation.
 
+**Supported operating systems:**
+
+| OS                       | Debian | Status                 | Display              |
+| ------------------------ | ------ | ---------------------- | -------------------- |
+| Raspberry Pi OS Bookworm | 12     | ✅ Recommended         | X11 (openbox / LXDE) |
+| Raspberry Pi OS Trixie   | 13     | ✅ Supported           | Wayland (labwc)      |
+| Raspberry Pi OS Bullseye | 11     | ⚠️ Legacy, best-effort | X11                  |
+
 **Standard install (kiosk mode — auto-starts fullscreen on boot):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/accius/openhamclock/main/scripts/setup-pi.sh | bash -s -- --kiosk
 ```
 
-This is the recommended option for a dedicated shack display. The Pi boots directly into a fullscreen Chromium browser showing OpenHamClock. No desktop environment needed.
+This is the recommended option for a dedicated shack display. The Pi boots directly into a fullscreen Chromium browser showing OpenHamClock. The kiosk launcher automatically detects Wayland (Trixie/labwc) or X11 (Bookworm/LXDE) and adjusts accordingly — no manual configuration needed.
 
 **Server-only install (headless, no GUI):**
 
@@ -847,12 +855,13 @@ curl -fsSL https://raw.githubusercontent.com/accius/openhamclock/main/scripts/se
 After installation, configure your station:
 
 ```bash
-cd ~/openhamclock
-nano .env          # Set your callsign and locator
-./restart.sh       # Apply changes
+nano ~/openhamclock/.env              # Set CALLSIGN and LOCATOR
+sudo systemctl restart openhamclock   # Apply changes
 ```
 
-The Pi setup script installs Node.js 20, clones the repository, builds the frontend, creates a systemd service (`openhamclock.service`) for automatic startup, and optionally configures Chromium in kiosk mode. It also installs `fonts-noto-color-emoji` so that all emoji icons display correctly in Chromium.
+The setup script creates `.env` automatically from the built-in template and enables server-side settings sync (`SETTINGS_SYNC=true`) for Pi installs. This means your `CALLSIGN` and `LOCATOR` values from `.env` appear on screen as soon as the service restarts — no manual UI configuration step required.
+
+The Pi setup script installs Node.js 22 LTS, clones the repository, builds the frontend, creates a systemd service (`openhamclock.service`) for automatic startup, and optionally configures Chromium in kiosk mode. It also installs `fonts-noto-color-emoji` so that all emoji icons display correctly in Chromium.
 
 ### Docker
 
@@ -1214,6 +1223,9 @@ sudo apt install fonts-noto-color-emoji
 ```
 
 Then restart your browser (or reboot if running in kiosk mode). The Raspberry Pi setup script now installs this automatically. On Windows and macOS, emoji fonts are bundled with the OS and no action is needed.
+
+**Q: Chromium shows a "keyring" unlock prompt on every boot in kiosk mode — how do I prevent it?**
+A: This happens when Chromium tries to use the system keyring (gnome-keyring / kwallet) to protect its internal credential store, but the desktop session manager hasn't unlocked it yet. The Pi setup script already passes `--password-store=basic` to Chromium, which tells it to use a plain local store instead and avoids the prompt entirely. If you installed OpenHamClock before this fix was included, update your `kiosk.sh` by re-running the setup script, or add `--password-store=basic` manually to the Chromium launch line in `~/openhamclock/kiosk.sh`.
 
 ---
 

@@ -177,7 +177,13 @@ check_raspberry_pi() {
 update_system() {
     echo -e "${BLUE}>>> Updating system packages...${NC}"
     sudo apt-get update -qq
-    sudo apt-get upgrade -y -qq
+    # DEBIAN_FRONTEND=noninteractive suppresses dpkg interactive prompts.
+    # --force-confold keeps existing config files when a package ships a new version
+    # (e.g. rpi-chromium-mods updating master_preferences).
+    # --force-confdef handles any remaining unset choices with the package default.
+    sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq \
+        -o Dpkg::Options::="--force-confold" \
+        -o Dpkg::Options::="--force-confdef"
 }
 
 # Install Node.js
@@ -263,8 +269,15 @@ setup_repository() {
         cp .env.example .env
         # Switch to the production port used by the systemd service and kiosk
         sed -i 's/^PORT=3001$/PORT=3000/' .env
+        # Enable server-side settings sync for Pi (single-user kiosk deployment).
+        # With SETTINGS_SYNC=true the UI reads/writes its settings (callsign, locator,
+        # layout, theme, etc.) from the server instead of browser localStorage.
+        # This means editing CALLSIGN and LOCATOR in .env and restarting the service
+        # is enough to update what is shown on screen — no manual UI step required.
+        sed -i 's/^SETTINGS_SYNC=false$/SETTINGS_SYNC=true/' .env
         echo -e "${YELLOW}⚠ A default .env file has been created at $INSTALL_DIR/.env${NC}"
-        echo -e "${YELLOW}  Edit it to set your CALLSIGN and LOCATOR before starting.${NC}"
+        echo -e "${YELLOW}  Edit CALLSIGN and LOCATOR in $INSTALL_DIR/.env, then run:${NC}"
+        echo -e "${YELLOW}  sudo systemctl restart openhamclock${NC}"
     else
         echo -e "${GREEN}✓ Existing .env kept — not overwritten${NC}"
     fi
@@ -428,6 +441,7 @@ $CHROME_CMD \
     --disable-component-update \
     --overscroll-history-navigation=0 \
     --disable-pinch \
+    --password-store=basic \
     --user-data-dir="$HOME/.config/openhamclock-kiosk" \
     $CHROMIUM_EXTRA_FLAGS \
     http://localhost:3000 &
