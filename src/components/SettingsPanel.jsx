@@ -2504,7 +2504,7 @@ export const SettingsPanel = ({
                       result.push(renderBuiltInOverlayCard(item));
                     });
                   }
-                  grouped[key].forEach((layer) => {
+                  (grouped[key] || []).forEach((layer) => {
                     result.push(renderLayerCard(layer));
                     rendered.add(layer.id);
                   });
