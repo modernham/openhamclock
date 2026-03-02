@@ -11209,22 +11209,93 @@ function handleWSJTXMessage(msg, state) {
     }
 
     case WSJTX_MSG.STATUS: {
+      const prev = state.clients[msg.id] || {};
+      const newBand = msg.dialFrequency ? freqToBand(msg.dialFrequency) : null;
+
+      // ── Resolve DX callsign to coordinates ──
+      // When the operator selects a callsign in WSJT-X (setting Std Msgs),
+      // dxCall and optionally dxGrid are sent in the STATUS message.
+      // We resolve to lat/lon so the client can set the DX target.
+      let dxLat = null;
+      let dxLon = null;
+      let dxGrid = msg.dxGrid || null;
+      const dxCall = (msg.dxCall || '').replace(/[<>]/g, '').trim();
+
+      if (dxCall) {
+        // 1. Try dxGrid from WSJT-X (if it knows the DX station's grid)
+        if (dxGrid) {
+          const coords = gridToLatLon(dxGrid);
+          if (coords) {
+            dxLat = coords.latitude;
+            dxLon = coords.longitude;
+          }
+        }
+        // 2. Try grid cache (from prior CQ/exchange messages with grids)
+        if (dxLat === null) {
+          const cached = wsjtxGridCache.get(dxCall.toUpperCase());
+          if (cached) {
+            dxLat = cached.lat;
+            dxLon = cached.lon;
+            dxGrid = dxGrid || cached.grid;
+          }
+        }
+        // 3. Try callsign lookup cache (HamQTH/QRZ)
+        if (dxLat === null) {
+          const baseCall = extractBaseCallsign(dxCall);
+          if (baseCall) {
+            const cached = callsignLookupCache.get(baseCall);
+            if (cached && Date.now() - cached.timestamp < CALLSIGN_CACHE_TTL && cached.data?.lat != null) {
+              dxLat = cached.data.lat;
+              dxLon = cached.data.lon;
+            }
+          }
+        }
+        // 4. Last resort: estimate from callsign prefix
+        if (dxLat === null) {
+          const prefixLoc = estimateLocationFromPrefix(dxCall);
+          if (prefixLoc) {
+            dxLat = prefixLoc.lat;
+            dxLon = prefixLoc.lon;
+            dxGrid = dxGrid || prefixLoc.grid;
+          }
+        }
+      }
+
+      // ── Detect band change ──
+      // When the operator changes bands in WSJT-X, old-band decodes are stale.
+      // Track the change so clients can clear their decode list.
+      const bandChanged = prev.band && newBand && prev.band !== newBand;
+
       state.clients[msg.id] = {
-        ...(state.clients[msg.id] || {}),
+        ...prev,
         lastSeen: msg.timestamp,
         dialFrequency: msg.dialFrequency,
         mode: msg.mode,
-        dxCall: msg.dxCall,
+        dxCall: dxCall || null,
+        dxGrid: dxGrid,
+        dxLat,
+        dxLon,
         deCall: msg.deCall,
         deGrid: msg.deGrid,
         txEnabled: msg.txEnabled,
         transmitting: msg.transmitting,
         decoding: msg.decoding,
         subMode: msg.subMode,
-        band: msg.dialFrequency ? freqToBand(msg.dialFrequency) : null,
+        band: newBand,
         configName: msg.configName,
         txMessage: msg.txMessage,
+        bandChanged: bandChanged ? { from: prev.band, to: newBand, at: msg.timestamp } : (prev.bandChanged || null),
       };
+
+      // Clear bandChanged flag after 10 seconds (client has had time to see it)
+      if (bandChanged) {
+        setTimeout(() => {
+          const client = state.clients[msg.id];
+          if (client?.bandChanged?.at === msg.timestamp) {
+            client.bandChanged = null;
+          }
+        }, 10000);
+      }
       break;
     }
 

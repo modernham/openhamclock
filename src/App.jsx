@@ -207,6 +207,17 @@ const App = () => {
   const wsjtx = useWSJTX();
   const aprsData = useAPRS();
 
+  // ── WSJT-X → DX Target ──
+  // When the operator selects a callsign in WSJT-X (setting Std Msgs),
+  // the server resolves it to coordinates. Set the DX target automatically
+  // so propagation predictions and beam heading update in real time.
+  // Respects the DX Lock toggle — if locked, WSJT-X changes are ignored.
+  useEffect(() => {
+    if (wsjtx.dxTarget?.lat != null && wsjtx.dxTarget?.lon != null) {
+      handleDXChange({ lat: wsjtx.dxTarget.lat, lon: wsjtx.dxTarget.lon });
+    }
+  }, [wsjtx.dxTarget, handleDXChange]);
+
   const { satelliteFilters, setSatelliteFilters, filteredSatellites } = useSatellitesFilters(satellites.data);
 
   const {

@@ -54,6 +54,18 @@ export function useWSJTX(enabled = true) {
   const backoffUntil = useRef(0); // Rate-limit backoff timestamp
   const hasDataFlowing = useRef(false); // True when relay/UDP is active
 
+  // ── DX Target tracking ──
+  // When the operator selects a callsign in WSJT-X (Std Msgs), the server
+  // resolves it to coordinates. We track changes here so the app can set
+  // the DX target automatically — same as clicking a PSKReporter report.
+  const [dxTarget, setDxTarget] = useState(null); // { call, grid, lat, lon }
+  const prevDxCallRef = useRef(null);
+
+  // ── Band change tracking ──
+  // When WSJT-X changes bands, old decodes are stale. We track the current
+  // band and clear decodes when it changes.
+  const prevBandRef = useRef(null);
+
   // Lightweight poll - just new decodes since last check
   const pollDecodes = useCallback(async () => {
     if (!enabled) return;
@@ -163,11 +175,49 @@ export function useWSJTX(enabled = true) {
     if (enabled) fetchFull();
   }, 5000);
 
+  // ── Derive DX target from active WSJT-X client status ──
+  // Pick the most recently active client (most recent lastSeen).
+  // When its dxCall changes and has resolved coordinates, update dxTarget.
+  useEffect(() => {
+    const clients = data.clients || {};
+    const entries = Object.values(clients);
+    if (entries.length === 0) return;
+
+    // Pick most recently active client
+    const active = entries.reduce((a, b) => ((a.lastSeen || 0) > (b.lastSeen || 0) ? a : b));
+
+    const call = (active.dxCall || '').trim();
+    const lat = active.dxLat;
+    const lon = active.dxLon;
+    const grid = active.dxGrid || null;
+
+    // Only fire when the DX call actually changes (not on every poll)
+    if (call && call !== prevDxCallRef.current && lat != null && lon != null) {
+      setDxTarget({ call, grid, lat, lon });
+    } else if (!call && prevDxCallRef.current) {
+      // DX call cleared (operator cleared Std Msgs)
+      setDxTarget(null);
+    }
+    prevDxCallRef.current = call || null;
+
+    // ── Band change detection ──
+    // When the active client's band changes, clear stale decodes from the old band.
+    const currentBand = active.band || null;
+    if (currentBand && prevBandRef.current && currentBand !== prevBandRef.current) {
+      setData((prev) => ({
+        ...prev,
+        decodes: [], // Clear all decodes on band change — server will fill with new-band decodes
+      }));
+    }
+    prevBandRef.current = currentBand;
+  }, [data.clients]);
+
   return {
     ...data,
     loading,
     error,
     sessionId,
+    dxTarget,
     refresh: fetchFull,
   };
 }
