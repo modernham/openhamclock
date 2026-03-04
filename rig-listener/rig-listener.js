@@ -676,7 +676,9 @@ async function initTci(cfg) {
       return;
     }
 
-    tciSocket.on('open', () => {
+    // Use addEventListener — works on both 'ws' npm lib AND Node 21+ native WebSocket.
+    // (.on() is ws-library-only and crashes with native WebSocket: "tciSocket.on is not a function")
+    tciSocket.addEventListener('open', () => {
       console.log(`[TCI] ✅ Connected to ${url}`);
       state.connected = true;
       broadcast({ type: 'update', prop: 'connected', value: true });
@@ -684,22 +686,24 @@ async function initTci(cfg) {
       tciSocket.send('start;');
     });
 
-    tciSocket.on('message', (data) => {
-      // data may be a Buffer (ws lib) or string (built-in)
-      const msg = typeof data === 'string' ? data : data.toString('utf8');
+    tciSocket.addEventListener('message', (evt) => {
+      // ws lib: evt may be a Buffer; native WebSocket: evt is MessageEvent with .data
+      const raw = evt.data !== undefined ? evt.data : evt;
+      const msg = typeof raw === 'string' ? raw : raw.toString('utf8');
       protocol.parseResponse(msg);
     });
 
-    tciSocket.on('error', (err) => {
+    tciSocket.addEventListener('error', (evt) => {
       // 'error' fires before 'close' — just log it, reconnect happens on 'close'
+      const err = evt.error || evt;
       if (err.code === 'ECONNREFUSED') {
         console.error(`[TCI] Connection refused — is Thetis/ExpertSDR running with TCI enabled?`);
       } else {
-        console.error(`[TCI] Error: ${err.message}`);
+        console.error(`[TCI] Error: ${err.message || 'connection error'}`);
       }
     });
 
-    tciSocket.on('close', () => {
+    tciSocket.addEventListener('close', () => {
       console.log('[TCI] Disconnected — reconnecting in 5s...');
       state.connected = false;
       broadcast({ type: 'update', prop: 'connected', value: false });
